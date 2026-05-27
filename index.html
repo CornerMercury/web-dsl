@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Web DSL</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 200px;
+            font-family: monospace;
+        }
+
+        #output {
+            margin-top: 20px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            background: #f9f9f9;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>DSL Runner</h2>
+
+    <textarea id="code-input" placeholder="Type code here..."></textarea>
+    <br><br>
+
+    <button id="run-btn">Run</button>
+
+    <div id="output"></div>
+
+    <script src="./target/scala-3.6.3/web-dsl-fastopt/main.js"></script>
+</body>
+
+</html>
