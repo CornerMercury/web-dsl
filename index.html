@@ -1,40 +1,306 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Web DSL</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DSL Runner</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         body {
-            font-family: sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             padding: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            margin-top: 0;
+        }
+
+        .editor-section {
+            margin-bottom: 20px;
         }
 
         textarea {
             width: 100%;
             height: 200px;
-            font-family: monospace;
+            font-family: "Menlo", "Monaco", "Courier New", monospace;
+            font-size: 14px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+            /* Ensures padding doesn't affect width */
+            resize: vertical;
         }
 
-        #output {
+        button#run-btn {
+            padding: 10px 20px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+
+        button#run-btn:hover {
+            background-color: #218838;
+        }
+
+        #output-area {
             margin-top: 20px;
-            border: 1px solid #ccc;
-            padding: 10px;
-            background: #f9f9f9;
+            border-top: 1px solid #eee;
+            padding-top: 20px;
+            display: none;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #ddd;
+            margin-bottom: 15px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            color: #000;
+        }
+
+        .tab.active {
+            color: #007bff;
+            border-bottom-color: #007bff;
+            font-weight: bold;
+        }
+
+        .error-box {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 4px;
+            border: 1px solid #f5c6cb;
+            margin-top: 10px;
+            white-space: pre-wrap;
+        }
+
+        #chart-container {
+            width: 100%;
+            height: 400px;
+            position: relative;
+        }
+
+        .tooltip {
+            position: absolute;
+            text-align: center;
+            padding: 8px;
+            font-size: 12px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
         }
     </style>
 </head>
 
 <body>
-    <h2>DSL Runner</h2>
 
-    <textarea id="code-input" placeholder="Type code here..."></textarea>
-    <br><br>
+    <div class="container">
+        <h2>DSL Runner</h2>
 
-    <button id="run-btn">Run</button>
+        <div class="editor-section">
+            <textarea id="code-input" placeholder="Type code here...">uniform(1, 6) + uniform(1, 6)</textarea>
+            <br>
+            <button id="run-btn">Run Code</button>
+        </div>
 
-    <div id="output"></div>
+        <div id="output-area">
+            <div id="tabs" class="tabs"></div>
+
+            <div id="error-log"></div>
+
+            <div id="chart-container"></div>
+        </div>
+    </div>
 
     <script src="./target/scala-3.6.3/web-dsl-fastopt/main.js"></script>
+
+    <script>
+        window.renderOutput = function (jsonString) {
+            const data = JSON.parse(jsonString);
+            const outputArea = document.getElementById('output-area');
+            const tabsDiv = document.getElementById('tabs');
+            const errorDiv = document.getElementById('error-log');
+            const chartDiv = document.getElementById('chart-container');
+
+            // Reset UI
+            outputArea.style.display = 'block';
+            tabsDiv.innerHTML = '';
+            errorDiv.innerHTML = '';
+            chartDiv.innerHTML = '';
+
+            if (data.status === 'error') {
+                errorDiv.innerHTML = `<div class="error-box"><strong>${data.title}:</strong> ${data.message}</div>`;
+                return;
+            }
+
+            const distributions = data.distributions;
+
+            // Handle Tabs
+            if (distributions.length > 1) {
+                distributions.forEach((dist, index) => {
+                    const btn = document.createElement('button');
+                    btn.className = 'tab' + (index === 0 ? ' active' : '');
+                    btn.innerText = dist.name;
+                    btn.onclick = () => switchTab(index, distributions);
+                    tabsDiv.appendChild(btn);
+                });
+            }
+
+            // Render initial chart
+            renderChart(distributions[0]);
+        };
+
+        function switchTab(index, allDistributions) {
+            // Update Tab Visuals
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach((t, i) => {
+                if (i === index) t.classList.add('active');
+                else t.classList.remove('active');
+            });
+
+            // Render specific chart
+            renderChart(allDistributions[index]);
+        }
+
+        function renderChart(distData) {
+            const container = document.getElementById('chart-container');
+            container.innerHTML = ''; // Clear previous chart
+
+            const data = distData.data;
+            if (!data || data.length === 0) return;
+
+            // Setup Dimensions
+            const margin = { top: 30, right: 30, bottom: 80, left: 70 }; 
+            const width = container.clientWidth - margin.left - margin.right;
+            const height = container.clientHeight - margin.top - margin.bottom;
+
+            // Create SVG
+            const svg = d3.select("#chart-container")
+                .append("svg")
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom)
+                .append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+            // X Axis
+            const x = d3.scaleBand()
+                .range([0, width])
+                .domain(data.map(d => d.v))
+                .padding(0.2);
+
+            // Logic to skip ticks if there are too many values
+            const maxTicks = Math.floor(width / 40);
+            const step = Math.max(1, Math.ceil(data.length / maxTicks));
+
+            const tickValues = data
+                .map((d, i) => ({ val: d.v, index: i }))
+                .filter(d => d.index % step === 0)
+                .map(d => d.val);
+
+            const xAxis = d3.axisBottom(x).tickValues(tickValues);
+
+            const xAxisGroup = svg.append("g")
+                .attr("transform", `translate(0,${height})`)
+                .call(xAxis);
+
+            xAxisGroup.selectAll("text")
+                .attr("transform", "translate(-10,0)rotate(-45)")
+                .style("text-anchor", "end");
+
+            const y = d3.scaleLinear()
+                .domain([0, d3.max(data, d => d.p)])
+                .range([height, 0]);
+
+            svg.append("g")
+                .call(d3.axisLeft(y).ticks(5).tickFormat(d => {
+                    return d < 0.01 && d > 0 ? d.toExponential(2) : d3.format(".2f")(d);
+                }));
+
+            const tooltip = d3.select("body").append("div")
+                .attr("class", "tooltip");
+
+            svg.selectAll("mybar")
+                .data(data)
+                .enter()
+                .append("rect")
+                .attr("x", d => x(d.v))
+                .attr("y", d => y(d.p))
+                .attr("width", x.bandwidth())
+                .attr("height", d => height - y(d.p))
+                .attr("fill", "#69b3a2")
+                .on("mouseover", function (event, d) {
+                    tooltip.transition().duration(200).style("opacity", .9);
+                    tooltip.html(`Value: ${d.v}<br>Prob: ${(d.p * 100).toFixed(2)}%`)
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 28) + "px");
+                    d3.select(this).attr("fill", "#4c8b7a");
+                })
+                .on("mouseout", function (d) {
+                    tooltip.transition().duration(500).style("opacity", 0);
+                    d3.select(this).attr("fill", "#69b3a2");
+                });
+
+            // Label Y Axis
+            svg.append("text")
+                .attr("class", "y label")
+                .attr("text-anchor", "middle")
+                .attr("y", -margin.left)
+                .attr("x", -height / 2)
+                .attr("dy", "1em")
+                .attr("transform", "rotate(-90)")
+                .text("Probability");
+
+            // Label X Axis
+            svg.append("text")
+                .attr("class", "x label")
+                .attr("text-anchor", "middle")
+                .attr("x", width / 2)
+                .attr("y", height + margin.bottom - 10)
+                .text("Outcome");
+        }
+
+        // Handle window resize to redraw charts
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                const activeTab = document.querySelector('.tab.active');
+                if (activeTab) activeTab.click();
+            }, 200);
+        });
+    </script>
+
 </body>
 
 </html>

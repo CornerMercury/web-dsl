@@ -2,6 +2,7 @@ import org.scalajs.dom
 import org.scalajs.dom.document
 import org.scalajs.dom.html
 import parsley.{Success, Failure}
+import scala.scalajs.js
 
 import DSL.frontend.parser
 import DSL.frontend.stdlib
@@ -17,24 +18,16 @@ object Main {
   def main(args: Array[String]): Unit = {
     val codeInput = document.getElementById("code-input").asInstanceOf[html.TextArea]
     val runBtn = document.getElementById("run-btn").asInstanceOf[html.Button]
-    val outputDiv = document.getElementById("output").asInstanceOf[html.Div]
 
     runBtn.onclick = { (e: dom.MouseEvent) =>
-      outputDiv.innerHTML = "" // Clear previous output
-      
       val sourceCode = codeInput.value
+      val jsonResult = runCompiler(sourceCode)
       
-      try {
-        val result = runCompiler(sourceCode)
-        
-        val pre = document.createElement("pre")
-        pre.textContent = result
-        outputDiv.appendChild(pre)
-        
-      } catch {
-        case e: Exception =>
-          outputDiv.textContent = s"Critical Error: ${e.getMessage}"
-          e.printStackTrace()
+      val renderFn = js.Dynamic.global.renderOutput
+      if (js.typeOf(renderFn) != "undefined") {
+        renderFn(jsonResult)
+      } else {
+        dom.console.error("renderOutput function not found in HTML.")
       }
     }
   }
@@ -42,40 +35,53 @@ object Main {
   def runCompiler(input: String): String = {
     val fullInput = stdlib.source + "\n" + input
 
-    parser.parse(fullInput) match {
-      case Success(p: Program) =>
+    try {
+      parser.parse(fullInput) match {
+        case Success(p: Program) =>
         
-        val scopeErrors = scopeChecker.check(p)
-        if (scopeErrors.nonEmpty) {
-          val errorMsg = scopeErrors.map(e => s"  - $e").mkString("\n")
-          return s"Scope Errors Found:\n$errorMsg"
-        }
-
-        val optimised = optimiser.optimise(p)
-
-        val typeErrors = typeChecker.check(optimised)
-        if (typeErrors.nonEmpty) {
-          val errorMsg = typeErrors.map(e => s"  - $e").mkString("\n")
-          return s"Type Errors Found:\n$errorMsg"
-        }
-
-        try {
-          val dists = interpreter.interpretProgram(optimised)
-          
-          val blocks = dists.zipWithIndex.map { case (dist, idx) =>
-            val distLines = dist.toSeq.sortBy(_._1).map { case (v, p) => f"  $v%6d  ${p * 100}%6.2f%%" }
-            s"Result ${idx + 1}:\n" + distLines.mkString("\n")
+          val scopeErrors = scopeChecker.check(p)
+          if (scopeErrors.nonEmpty) {
+            return errorJson("Scope Errors", scopeErrors.mkString("\n"))
           }
-          val distBlock = "Distributions (value → probability):\n" + blocks.mkString("\n\n")
-          
-          distBlock
-          
-        } catch {
-          case e: Exception => s"Runtime Error: ${e.getMessage}"
-        }
 
-      case Failure(err) =>
-        s"Syntax Error:\n$err"
+          val optimised = optimiser.optimise(p)
+
+          val typeErrors = typeChecker.check(optimised)
+          if (typeErrors.nonEmpty) {
+            return errorJson("Type Errors", typeErrors.mkString("\n"))
+          }
+
+          try {
+            val dists = interpreter.interpretProgram(optimised)
+            
+            val distsJson = dists.zipWithIndex.map { case (dist, idx) =>
+              val sortedData = dist.toSeq.sortBy(_._1)
+              val entries = sortedData.map { case (v, p) => 
+                s"""{"v": $v, "p": $p}""" 
+              }.mkString(",")
+              
+              s"""{"id": $idx, "name": "Result ${idx + 1}", "data": [$entries]}"""
+            }.mkString(",")
+            
+            s"""{"status": "success", "distributions": [$distsJson]}"""
+            
+          } catch {
+            case e: Exception => errorJson("Runtime Error", e.getMessage)
+          }
+
+        case Failure(err) =>
+          errorJson("Syntax Error", err.toString)
+      }
+    } catch {
+      case e: Exception => 
+        e.printStackTrace()
+        errorJson("Critical Error", e.getMessage)
     }
+  }
+
+  def errorJson(title: String, msg: String): String = {
+    // escaping for quotes and newlines
+    val cleanMsg = msg.replace("\"", "\\\"").replace("\n", "\\n")
+    s"""{"status": "error", "title": "$title", "message": "$cleanMsg"}"""
   }
 }
