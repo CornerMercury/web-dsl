@@ -48,6 +48,7 @@
             display: flex;
             align-items: center;
             gap: 15px;
+            flex-wrap: wrap;
         }
 
         button#run-btn {
@@ -80,6 +81,68 @@
             min-width: 60px;
         }
 
+        .mode-switch-container {
+            display: flex;
+            align-items: center;
+            margin-left: auto;
+            gap: 10px;
+        }
+
+        .switch-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 26px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked+.slider {
+            background-color: #2196F3;
+        }
+
+        input:focus+.slider {
+            box-shadow: 0 0 1px #2196F3;
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(24px);
+        }
+
         #output-area {
             margin-top: 20px;
             border-top: 1px solid #eee;
@@ -87,6 +150,23 @@
             display: none;
         }
 
+        .hidden {
+            display: none !important;
+        }
+
+        #text-output-container {
+            padding: 15px;
+            border-radius: 4px;
+            overflow: auto;
+            max-height: 400px;
+            font-family: "Menlo", "Monaco", "Courier New", monospace;
+            font-size: 14px;
+            white-space: pre;
+            /* Preserve formatting */
+            line-height: 1.5;
+        }
+
+        /* Chart Styles */
         .tabs {
             display: flex;
             border-bottom: 2px solid #ddd;
@@ -140,6 +220,7 @@
             border-radius: 4px;
             pointer-events: none;
             opacity: 0;
+            z-index: 10;
         }
     </style>
 </head>
@@ -155,25 +236,46 @@
             <div class="controls">
                 <button id="run-btn">Run Code</button>
                 <span id="timer">0.00s</span>
+
+                <div class="mode-switch-container">
+                    <span class="switch-label">Chart</span>
+                    <label class="switch">
+                        <input type="checkbox" id="mode-toggle">
+                        <span class="slider"></span>
+                    </label>
+                    <span class="switch-label">Text</span>
+                </div>
             </div>
         </div>
 
         <div id="output-area">
-            <div id="tabs" class="tabs"></div>
             <div id="error-log"></div>
-            <div id="chart-container"></div>
+
+            <div id="chart-view-container">
+                <div id="tabs" class="tabs"></div>
+                <div id="chart-container"></div>
+            </div>
+
+            <div id="text-output-container" class="hidden"></div>
         </div>
     </div>
-
-    <script src="./target/scala-3.6.3/web-dsl-fastopt/main.js"></script>
 
     <script>
         const runBtn = document.getElementById('run-btn');
         const timerSpan = document.getElementById('timer');
+        const modeToggle = document.getElementById('mode-toggle');
+        const outputArea = document.getElementById('output-area');
+        const chartViewContainer = document.getElementById('chart-view-container');
+        const textOutputContainer = document.getElementById('text-output-container');
+        const errorDiv = document.getElementById('error-log');
+
         let isRunning = false;
         let timerInterval;
         let startTime;
         let worker = null;
+
+        let lastResultData = null;
+        let viewMode = 'chart';
 
         const mainJsUrl = new URL('./target/scala-3.6.3/web-dsl-fastopt/main.js', window.location.href).href;
 
@@ -192,22 +294,19 @@
                 }
             };
             
-            // Import the Scala.js compiled code using the absolute URL
             importScripts('${mainJsUrl}');
         `;
 
         const blob = new Blob([workerScript], { type: 'application/javascript' });
         const workerUrl = URL.createObjectURL(blob);
 
-        function finishExecution() {
-            stopTimer();
-            isRunning = false;
-            updateButtonState();
-        }
+        modeToggle.addEventListener('change', (e) => {
+            viewMode = e.target.checked ? 'text' : 'chart';
+            updateView();
+        });
 
         runBtn.onclick = function (e) {
             if (isRunning) {
-                // STOP LOGIC
                 if (worker) {
                     worker.terminate();
                     worker = null;
@@ -218,39 +317,60 @@
                 return;
             }
 
-            // RUN LOGIC
             const sourceCode = document.getElementById("code-input").value;
+
+            lastResultData = null;
+            errorDiv.innerHTML = '';
+            textOutputContainer.textContent = '';
+
+            outputArea.style.display = 'block';
+            updateView();
 
             isRunning = true;
             updateButtonState();
             startTimer();
 
-            worker = new Worker(workerUrl);
+            try {
+                worker = new Worker(workerUrl);
+            } catch (err) {
+                console.warn("Worker creation failed, falling back to main thread for demo.");
+                setTimeout(() => {
+                    const result = window.runCompiler(sourceCode);
+                    handleResult(result);
+                }, 500);
+                return;
+            }
 
             worker.onmessage = function (e) {
                 const jsonResult = e.data;
-
-                if (isRunning) {
-                    window.renderOutput(jsonResult);
-                    finishExecution();
-                }
-
-                if (worker) {
-                    worker.terminate();
-                    worker = null;
-                }
+                handleResult(jsonResult);
             };
 
             worker.onerror = function (err) {
                 console.error("Worker Error:", err);
-                if (isRunning) {
-                    window.renderOutput(JSON.stringify({ status: "error", title: "Worker Error", message: err.message || "Unknown worker error" }));
-                    finishExecution();
-                }
+                handleResult(JSON.stringify({ status: "error", title: "Worker Error", message: err.message || "Unknown worker error" }));
             };
 
             worker.postMessage(sourceCode);
         };
+
+        function handleResult(jsonResult) {
+            if (isRunning) {
+                window.renderOutput(jsonResult);
+                finishExecution();
+            }
+
+            if (worker) {
+                worker.terminate();
+                worker = null;
+            }
+        }
+
+        function finishExecution() {
+            stopTimer();
+            isRunning = false;
+            updateButtonState();
+        }
 
         function updateButtonState() {
             if (isRunning) {
@@ -275,37 +395,83 @@
             clearInterval(timerInterval);
         }
 
+
         window.renderOutput = function (jsonString) {
             const data = JSON.parse(jsonString);
-            const outputArea = document.getElementById('output-area');
-            const tabsDiv = document.getElementById('tabs');
-            const errorDiv = document.getElementById('error-log');
-            const chartDiv = document.getElementById('chart-container');
+            lastResultData = data;
+            updateView();
+        };
 
-            outputArea.style.display = 'block';
-            tabsDiv.innerHTML = '';
-            errorDiv.innerHTML = '';
-            chartDiv.innerHTML = '';
+        function updateView() {
+            if (!lastResultData) return;
 
-            if (data.status === 'error') {
-                errorDiv.innerHTML = `<div class="error-box"><strong>${data.title}:</strong> ${data.message}</div>`;
+            if (lastResultData.status === 'error') {
+                errorDiv.innerHTML = `<div class="error-box"><strong>${lastResultData.title}:</strong> ${lastResultData.message}</div>`;
+                chartViewContainer.classList.add('hidden');
+                textOutputContainer.classList.add('hidden');
                 return;
+            } else {
+                errorDiv.innerHTML = '';
             }
 
-            const distributions = data.distributions;
+            if (viewMode === 'chart') {
+                chartViewContainer.classList.remove('hidden');
+                textOutputContainer.classList.add('hidden');
+
+                const distributions = lastResultData.distributions;
+                setupTabs(distributions);
+                renderChart(distributions[0]);
+
+            } else {
+                chartViewContainer.classList.add('hidden');
+                textOutputContainer.classList.remove('hidden');
+
+                let textOutput = "";
+
+                if (lastResultData.distributions && lastResultData.distributions.length > 0) {
+                    lastResultData.distributions.forEach((dist, idx) => {
+                        textOutput += `Result ${idx + 1}:\n`;
+
+                        if (dist.data && dist.data.length > 0) {
+                            dist.data.forEach(item => {
+                                // Formatting probability to 4 decimal places for readability
+                                const prob = typeof item.p === 'number' ? item.p.toFixed(4) : item.p;
+                                textOutput += `   ${item.v}: ${prob}\n`;
+                            });
+                        } else {
+                            textOutput += "   (No data)\n";
+                        }
+
+                        // Add a newline separator if there are multiple distributions
+                        if (idx < lastResultData.distributions.length - 1) {
+                            textOutput += "\n";
+                        }
+                    });
+                }
+
+                textOutputContainer.textContent = textOutput;
+            }
+        }
+
+        function setupTabs(distributions) {
+            const tabsDiv = document.getElementById('tabs');
+            tabsDiv.innerHTML = ''; // Clear existing
 
             if (distributions.length > 1) {
                 distributions.forEach((dist, index) => {
                     const btn = document.createElement('button');
                     btn.className = 'tab' + (index === 0 ? ' active' : '');
                     btn.innerText = dist.name;
-                    btn.onclick = () => switchTab(index, distributions);
+                    btn.onclick = () => {
+                        switchTab(index, distributions);
+                    };
                     tabsDiv.appendChild(btn);
                 });
+                tabsDiv.style.display = 'flex';
+            } else {
+                tabsDiv.style.display = 'none';
             }
-
-            renderChart(distributions[0]);
-        };
+        }
 
         function switchTab(index, allDistributions) {
             const tabs = document.querySelectorAll('.tab');
@@ -326,6 +492,8 @@
             const margin = { top: 30, right: 30, bottom: 80, left: 70 };
             const width = container.clientWidth - margin.left - margin.right;
             const height = container.clientHeight - margin.top - margin.bottom;
+
+            d3.selectAll(".tooltip").remove();
 
             const svg = d3.select("#chart-container")
                 .append("svg")
@@ -411,8 +579,14 @@
         window.addEventListener('resize', () => {
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
-                const activeTab = document.querySelector('.tab.active');
-                if (activeTab) activeTab.click();
+                if (viewMode === 'chart' && lastResultData && lastResultData.status === 'success') {
+                    const activeTab = document.querySelector('.tab.active');
+                    if (activeTab) {
+                        activeTab.click();
+                    } else if (lastResultData.distributions.length > 0) {
+                        renderChart(lastResultData.distributions[0]);
+                    }
+                }
             }, 200);
         });
     </script>
