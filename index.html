@@ -277,7 +277,7 @@
         let lastResultData = null;
         let viewMode = 'chart';
 
-        const mainJsUrl = "main.js"
+        const mainJsUrl = new URL('main.js', document.baseURI).href;
 
         const workerScript = `
             self.onmessage = function(e) {
