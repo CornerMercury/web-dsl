@@ -3,6 +3,7 @@ import org.scalajs.dom.document
 import org.scalajs.dom.html
 import parsley.{Success, Failure}
 import scala.scalajs.js
+import scala.scalajs.js.special // Import this to access the global scope safely
 
 import DSL.frontend.parser
 import DSL.frontend.stdlib
@@ -16,19 +17,20 @@ import DSL.backend.typedAST._
 
 object Main {
   def main(args: Array[String]): Unit = {
-    val codeInput = document.getElementById("code-input").asInstanceOf[html.TextArea]
-    val runBtn = document.getElementById("run-btn").asInstanceOf[html.Button]
+    val func: js.Function1[String, String] = (input: String) => runCompiler(input)
 
-    runBtn.onclick = { (e: dom.MouseEvent) =>
-      val sourceCode = codeInput.value
-      val jsonResult = runCompiler(sourceCode)
-      
-      val renderFn = js.Dynamic.global.renderOutput
-      if (js.typeOf(renderFn) != "undefined") {
-        renderFn(jsonResult)
-      } else {
-        dom.console.error("renderOutput function not found in HTML.")
+    if (js.typeOf(dom.window) != "undefined") {
+      dom.window.asInstanceOf[js.Dynamic].runCompiler = func
+    } else {
+      // Worker: Use defineProperty to avoid strict mode errors
+      val globalScope = js.special.fileLevelThis.asInstanceOf[js.Object]
+      val descriptor = new js.PropertyDescriptor {
+        value = func
+        writable = true
+        configurable = true
+        enumerable = true
       }
+      js.Object.defineProperty(globalScope, "runCompiler", descriptor)
     }
   }
 
@@ -80,7 +82,6 @@ object Main {
   }
 
   def errorJson(title: String, msg: String): String = {
-    // escaping for quotes and newlines
     val cleanMsg = msg.replace("\"", "\\\"").replace("\n", "\\n")
     s"""{"status": "error", "title": "$title", "message": "$cleanMsg"}"""
   }

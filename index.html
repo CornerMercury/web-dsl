@@ -40,8 +40,14 @@
             border: 1px solid #ccc;
             border-radius: 4px;
             box-sizing: border-box;
-            /* Ensures padding doesn't affect width */
             resize: vertical;
+        }
+
+        .controls {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
         }
 
         button#run-btn {
@@ -52,11 +58,26 @@
             border-radius: 4px;
             cursor: pointer;
             font-size: 16px;
-            margin-top: 10px;
+            transition: background-color 0.2s;
         }
 
         button#run-btn:hover {
             background-color: #218838;
+        }
+
+        button#run-btn.stop-mode {
+            background-color: #dc3545;
+        }
+
+        button#run-btn.stop-mode:hover {
+            background-color: #c82333;
+        }
+
+        #timer {
+            font-family: monospace;
+            font-size: 16px;
+            color: #555;
+            min-width: 60px;
         }
 
         #output-area {
@@ -129,16 +150,17 @@
         <h2>DSL Runner</h2>
 
         <div class="editor-section">
-            <textarea id="code-input" placeholder="Type code here...">uniform(1, 6) + uniform(1, 6)</textarea>
-            <br>
-            <button id="run-btn">Run Code</button>
+            <textarea id="code-input" placeholder="Type code here...">d6</textarea>
+
+            <div class="controls">
+                <button id="run-btn">Run Code</button>
+                <span id="timer">0.00s</span>
+            </div>
         </div>
 
         <div id="output-area">
             <div id="tabs" class="tabs"></div>
-
             <div id="error-log"></div>
-
             <div id="chart-container"></div>
         </div>
     </div>
@@ -146,6 +168,113 @@
     <script src="./target/scala-3.6.3/web-dsl-fastopt/main.js"></script>
 
     <script>
+        const runBtn = document.getElementById('run-btn');
+        const timerSpan = document.getElementById('timer');
+        let isRunning = false;
+        let timerInterval;
+        let startTime;
+        let worker = null;
+
+        const mainJsUrl = new URL('./target/scala-3.6.3/web-dsl-fastopt/main.js', window.location.href).href;
+
+        const workerScript = `
+            self.onmessage = function(e) {
+                const code = e.data;
+                try {
+                    if (typeof runCompiler === 'undefined') {
+                        self.postMessage(JSON.stringify({status: "error", title: "Initialization Error", message: "runCompiler not found in worker scope."}));
+                    } else {
+                        const result = runCompiler(code);
+                        self.postMessage(result);
+                    }
+                } catch (err) {
+                    self.postMessage(JSON.stringify({status: "error", title: "Runtime Error", message: err.message}));
+                }
+            };
+            
+            // Import the Scala.js compiled code using the absolute URL
+            importScripts('${mainJsUrl}');
+        `;
+
+        const blob = new Blob([workerScript], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+
+        function finishExecution() {
+            stopTimer();
+            isRunning = false;
+            updateButtonState();
+        }
+
+        runBtn.onclick = function (e) {
+            if (isRunning) {
+                // STOP LOGIC
+                if (worker) {
+                    worker.terminate();
+                    worker = null;
+                }
+                isRunning = false;
+                stopTimer();
+                updateButtonState();
+                return;
+            }
+
+            // RUN LOGIC
+            const sourceCode = document.getElementById("code-input").value;
+
+            isRunning = true;
+            updateButtonState();
+            startTimer();
+
+            worker = new Worker(workerUrl);
+
+            worker.onmessage = function (e) {
+                const jsonResult = e.data;
+
+                if (isRunning) {
+                    window.renderOutput(jsonResult);
+                    finishExecution();
+                }
+
+                if (worker) {
+                    worker.terminate();
+                    worker = null;
+                }
+            };
+
+            worker.onerror = function (err) {
+                console.error("Worker Error:", err);
+                if (isRunning) {
+                    window.renderOutput(JSON.stringify({ status: "error", title: "Worker Error", message: err.message || "Unknown worker error" }));
+                    finishExecution();
+                }
+            };
+
+            worker.postMessage(sourceCode);
+        };
+
+        function updateButtonState() {
+            if (isRunning) {
+                runBtn.textContent = "Stop Code";
+                runBtn.classList.add('stop-mode');
+            } else {
+                runBtn.textContent = "Run Code";
+                runBtn.classList.remove('stop-mode');
+            }
+        }
+
+        function startTimer() {
+            startTime = Date.now();
+            timerSpan.textContent = "0.00s";
+            timerInterval = setInterval(() => {
+                const elapsed = (Date.now() - startTime) / 1000;
+                timerSpan.textContent = elapsed.toFixed(2) + "s";
+            }, 50);
+        }
+
+        function stopTimer() {
+            clearInterval(timerInterval);
+        }
+
         window.renderOutput = function (jsonString) {
             const data = JSON.parse(jsonString);
             const outputArea = document.getElementById('output-area');
@@ -153,7 +282,6 @@
             const errorDiv = document.getElementById('error-log');
             const chartDiv = document.getElementById('chart-container');
 
-            // Reset UI
             outputArea.style.display = 'block';
             tabsDiv.innerHTML = '';
             errorDiv.innerHTML = '';
@@ -166,7 +294,6 @@
 
             const distributions = data.distributions;
 
-            // Handle Tabs
             if (distributions.length > 1) {
                 distributions.forEach((dist, index) => {
                     const btn = document.createElement('button');
@@ -177,35 +304,29 @@
                 });
             }
 
-            // Render initial chart
             renderChart(distributions[0]);
         };
 
         function switchTab(index, allDistributions) {
-            // Update Tab Visuals
             const tabs = document.querySelectorAll('.tab');
             tabs.forEach((t, i) => {
                 if (i === index) t.classList.add('active');
                 else t.classList.remove('active');
             });
-
-            // Render specific chart
             renderChart(allDistributions[index]);
         }
 
         function renderChart(distData) {
             const container = document.getElementById('chart-container');
-            container.innerHTML = ''; // Clear previous chart
+            container.innerHTML = '';
 
             const data = distData.data;
             if (!data || data.length === 0) return;
 
-            // Setup Dimensions
-            const margin = { top: 30, right: 30, bottom: 80, left: 70 }; 
+            const margin = { top: 30, right: 30, bottom: 80, left: 70 };
             const width = container.clientWidth - margin.left - margin.right;
             const height = container.clientHeight - margin.top - margin.bottom;
 
-            // Create SVG
             const svg = d3.select("#chart-container")
                 .append("svg")
                 .attr("width", width + margin.left + margin.right)
@@ -213,13 +334,11 @@
                 .append("g")
                 .attr("transform", `translate(${margin.left},${margin.top})`);
 
-            // X Axis
             const x = d3.scaleBand()
                 .range([0, width])
                 .domain(data.map(d => d.v))
                 .padding(0.2);
 
-            // Logic to skip ticks if there are too many values
             const maxTicks = Math.floor(width / 40);
             const step = Math.max(1, Math.ceil(data.length / maxTicks));
 
@@ -271,7 +390,6 @@
                     d3.select(this).attr("fill", "#69b3a2");
                 });
 
-            // Label Y Axis
             svg.append("text")
                 .attr("class", "y label")
                 .attr("text-anchor", "middle")
@@ -281,7 +399,6 @@
                 .attr("transform", "rotate(-90)")
                 .text("Probability");
 
-            // Label X Axis
             svg.append("text")
                 .attr("class", "x label")
                 .attr("text-anchor", "middle")
@@ -290,7 +407,6 @@
                 .text("Outcome");
         }
 
-        // Handle window resize to redraw charts
         let resizeTimer;
         window.addEventListener('resize', () => {
             clearTimeout(resizeTimer);
