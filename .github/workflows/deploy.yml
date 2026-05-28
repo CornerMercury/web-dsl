@@ -38,6 +38,7 @@ jobs:
         run: |
           mkdir -p site
           cp index.html site/
+          cp target/scala-3.6.3/web-dsl-fastopt/main.js site/main.js
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
