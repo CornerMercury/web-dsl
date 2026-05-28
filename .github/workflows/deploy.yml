@@ -31,6 +31,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup SBT
+        uses: sbt/setup-sbt@v1
+
       - name: Build Scala.js
         run: sbt fastOptJS
 
