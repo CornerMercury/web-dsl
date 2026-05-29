@@ -162,7 +162,6 @@
             font-family: "Menlo", "Monaco", "Courier New", monospace;
             font-size: 14px;
             white-space: pre;
-            /* Preserve formatting */
             line-height: 1.5;
         }
 
@@ -414,11 +413,19 @@
                 errorDiv.innerHTML = '';
             }
 
+            const distributions = lastResultData.distributions;
+
+            if (!distributions || distributions.length === 0) {
+                chartViewContainer.classList.add('hidden');
+                textOutputContainer.classList.remove('hidden');
+                textOutputContainer.textContent = "No output produced.";
+                return;
+            }
+
             if (viewMode === 'chart') {
                 chartViewContainer.classList.remove('hidden');
                 textOutputContainer.classList.add('hidden');
 
-                const distributions = lastResultData.distributions;
                 setupTabs(distributions);
                 renderChart(distributions[0]);
 
@@ -583,7 +590,7 @@
                     const activeTab = document.querySelector('.tab.active');
                     if (activeTab) {
                         activeTab.click();
-                    } else if (lastResultData.distributions.length > 0) {
+                    } else if (lastResultData.distributions && lastResultData.distributions.length > 0) {
                         renderChart(lastResultData.distributions[0]);
                     }
                 }
