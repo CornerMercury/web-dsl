@@ -6,18 +6,19 @@ import DSL.backend.Builtins
 import DSL.backend.semanticTypes._
 import scala.collection.mutable
 
-// Aliases for Frontend types to avoid confusion with Backend types
+// Aliases
 import DSL.frontend.AST.{Type => FType, DistType => FDistType, PoolType => FPoolType}
 
 sealed trait TypeError
-case class NonScalarComparison(op: String, leftTy: Ty, rightTy: Ty) extends TypeError
 case class ArgTypeMismatch(funcName: String, paramName: String, expected: Ty, actual: Ty) extends TypeError
 case class DiceCountMustBeScalar(actualTy: Ty) extends TypeError
 
 object typeChecker {
 
-  def check(program: Program): List[TypeError] = {
+  def check(program: Program): Either[List[TypeError], List[Either[TyStmt, TyExpr]]] = {
     val errors = mutable.ListBuffer.empty[TypeError]
+    
+    // Build Global Signature Environment (Functions)
     val funcEnv = program.topLevel.collect { case Left(f: Func) => f.name -> f }.toMap
     
     val funcSignatures: Map[String, Map[String, Ty]] = 
@@ -26,127 +27,121 @@ object typeChecker {
           val ty = p.typ match {
             case Some(FPoolType) => PoolTy
             case Some(FDistType) => DistTy(GenericTy)
-            case None => UnknownTy
+            case None => DistTy(GenericTy)
           }
           p.name -> ty
         }.toMap
       }
-    
+
+    // Pass 1: Collect Top-Level Assignments to resolve identifiers in order
     var typeEnv = Map.empty[String, Ty]
-
-    def checkExpr(expr: Expr): Unit = {
-      val tyExpr = typer.annotate(expr)
-      checkTyExpr(tyExpr)
-    }
-
-    def isScalar(expr: TyExpr): Boolean = expr.ty == DistTy(ScalarTy)
-
-    def checkTyExpr(tyExpr: TyExpr): Unit = tyExpr match {
-      case TyIntLiteral(_, _) => ()
-      case TyIdent(_, _) => ()
-      case TyCustomDist(_, _) => ()
-      case TyPool(items, _) => items.foreach(checkTyExpr)
-      case TyPoolConcat(l, r, _) => checkTyExpr(l); checkTyExpr(r)
-      
-      case TyBinary(BinaryOp.Dice, countExpr, sidesExpr, _) =>
-        if (!isScalar(countExpr)) errors += DiceCountMustBeScalar(countExpr.ty)
-        checkTyExpr(countExpr)
-        checkTyExpr(sidesExpr)
-
-      case TyUnary(op, inner, _) => op match {
-        case UnaryOp.Sum | UnaryOp.Prod => checkTyExpr(inner)
-        case _ => checkTyExpr(inner)
-      }
-      
-      case TyCall(name, args, _) =>
-        args.foreach(checkTyExpr)
-        
-        Builtins.all.get(name) match {
-          case Some(builtin) =>
-            if (args.size != builtin.paramTypes.size) {
-               errors += ArgTypeMismatch(name, "arity", UnknownTy, UnknownTy)
-            } else {
-              args.zip(builtin.paramTypes).foreach { case (argTyExpr, expectedTy) =>
-                val actual = inferTyType(argTyExpr, typeEnv)
-                if (!satisfies(actual, expectedTy)) {
-                  errors += ArgTypeMismatch(name, s"arg", expectedTy, actual)
-                }
-              }
-            }
-          case None =>
-            funcSignatures.get(name).foreach { signature =>
-              funcEnv.get(name).foreach { funcDef =>
-                args.zip(funcDef.params).foreach { case (argTyExpr, param) =>
-                  signature.get(param.name).foreach { required =>
-                    val actual = inferTyType(argTyExpr, typeEnv)
-                    if (!satisfies(actual, required)) {
-                      errors += ArgTypeMismatch(name, param.name, required, actual)
-                    }
-                  }
-                }
-              }
-            }
-        }
-        
-      case TyMapExpr(funcName, inner, _) =>
-        checkTyExpr(inner)
-        
-      case TyBlock(stmts, finalExpr, _) =>
-        stmts.foreach {
-          case Assign(name, e) =>
-            checkExpr(e)
-            typeEnv = typeEnv.updated(name, inferType(e, typeEnv))
-          case Func(_, _, _) => ()
-        }
-        checkTyExpr(finalExpr)
-        
-      case TyIfExpr(branches, elseB, _) =>
-        branches.foreach { branch =>
-          branch.bindings.foreach(b => checkExpr(b.expr))
-          checkTyExpr(branch.condition)
-          checkTyExpr(branch.body)
-        }
-        checkTyExpr(elseB)
-        
-      case TyBinary(op, l, r, _) =>
-        checkTyExpr(l)
-        checkTyExpr(r)
-    }
+    var typedTopLevel = List.empty[Either[TyStmt, TyExpr]]
 
     program.topLevel.foreach {
-      case Left(stmt) =>
-        stmt match {
-          case Assign(name, expr) =>
-            checkExpr(expr)
-            typeEnv = typeEnv.updated(name, inferType(expr, typeEnv))
-          case Func(name, params, body) => 
-            val oldEnv = typeEnv
-            val signature = funcSignatures.getOrElse(name, Map.empty)
-            val newEnv = typeEnv ++ params.map { p => 
-              p.name -> signature.getOrElse(p.name, UnknownTy)
-            }
-            typeEnv = newEnv
-            checkExpr(body)
-            typeEnv = oldEnv
+      case Left(Assign(name, expr)) =>
+        val tExpr = typer.infer(expr, typeEnv)
+      
+        validateExpr(tExpr, typeEnv, errors, funcSignatures)
+        
+        typedTopLevel = typedTopLevel :+ Left(typedAST.TyAssign(name, tExpr))
+        typeEnv = typeEnv.updated(name, tExpr.ty)
+
+      case Left(f @ Func(name, params, body)) =>
+        val sig = funcSignatures.getOrElse(name, Map.empty)
+        val funcEnvLocal = typeEnv ++ sig
+        val tFunc = typer.typeStmt(f, funcEnvLocal)
+        
+        // Recursively check inside function
+        tFunc match {
+          case tf: typedAST.TyFunc =>
+            validateExpr(tf.body, sig, errors, funcSignatures)
+          case _ =>
         }
-      case Right(expr) => checkExpr(expr)
+        
+        typedTopLevel = typedTopLevel :+ Left(tFunc)
+
+      case Right(expr) =>
+        val tExpr = typer.infer(expr, typeEnv)
+        validateExpr(tExpr, typeEnv, errors, funcSignatures)
+        typedTopLevel = typedTopLevel :+ Right(tExpr)
     }
+
+    if (errors.nonEmpty) Left(errors.toList)
+    else Right(typedTopLevel)
+  }
+
+  private def validateExpr(
+    tyExpr: TyExpr, 
+    env: Map[String, Ty], 
+    errors: mutable.ListBuffer[TypeError],
+    funcSignatures: Map[String, Map[String, Ty]]
+  ): Unit = tyExpr match {
+    case TyIntLiteral(_, _) => ()
+    case TyIdent(_, _) => () // Assumed valid by scope checker
     
-    errors.toList
+    case TyCustomDist(_, _) => ()
+    case TyPool(items, _) => items.foreach(validateExpr(_, env, errors, funcSignatures))
+    case TyPoolConcat(l, r, _) => validateExpr(l, env, errors, funcSignatures); validateExpr(r, env, errors, funcSignatures)
+    
+    case TyBinary(BinaryOp.Dice, countExpr, _, _) =>
+      if (!isScalar(countExpr)) errors += DiceCountMustBeScalar(countExpr.ty)
+      validateExpr(countExpr, env, errors, funcSignatures)
+
+    case TyUnary(_, inner, _) => validateExpr(inner, env, errors, funcSignatures)
+      
+    case TyCall(name, args, _) =>
+      args.foreach(validateExpr(_, env, errors, funcSignatures))
+      
+      Builtins.all.get(name) match {
+        case Some(builtin) =>
+          if (args.size != builtin.paramTypes.size) {
+             errors += ArgTypeMismatch(name, "arity", UnknownTy, UnknownTy)
+          } else {
+            args.zip(builtin.paramTypes).foreach { case (argTyExpr, expectedTy) =>
+              if (!satisfies(argTyExpr.ty, expectedTy)) {
+                errors += ArgTypeMismatch(name, s"arg", expectedTy, argTyExpr.ty)
+              }
+            }
+          }
+        case None =>
+          funcSignatures.get(name).foreach { signature =>
+            // Check argument count
+            if (args.size != signature.size) {
+               errors += ArgTypeMismatch(name, "arity", UnknownTy, UnknownTy)
+            } else {
+              args.zip(signature).foreach { case (argTyExpr, (paramName, expectedTy)) =>
+                if (!satisfies(argTyExpr.ty, expectedTy)) {
+                  errors += ArgTypeMismatch(name, paramName, expectedTy, argTyExpr.ty)
+                }
+              }
+            }
+          }
+      }
+        
+    case TyMapExpr(funcName, inner, _) =>
+      validateExpr(inner, env, errors, funcSignatures)
+        
+    case TyBlock(stmts, finalExpr, _) =>
+      stmts.foreach {
+        case TyAssign(_, e) => validateExpr(e, env, errors, funcSignatures)
+        case TyFunc(_, _, b) => validateExpr(b, env, errors, funcSignatures)
+      }
+      validateExpr(finalExpr, env, errors, funcSignatures)
+        
+    case TyIfExpr(branches, elseB, _) =>
+      branches.foreach { b =>
+        b.bindings.foreach(bind => validateExpr(bind.expr, env, errors, funcSignatures))
+        validateExpr(b.condition, env ++ b.bindings.map(x => x.name -> x.expr.ty), errors, funcSignatures)
+        validateExpr(b.body, env ++ b.bindings.map(x => x.name -> x.expr.ty), errors, funcSignatures)
+      }
+      validateExpr(elseB, env, errors, funcSignatures)
+        
+    case TyBinary(_, l, r, _) =>
+      validateExpr(l, env, errors, funcSignatures)
+      validateExpr(r, env, errors, funcSignatures)
   }
 
-  private def inferType(expr: Expr, typeEnv: Map[String, Ty]): Ty = {
-    val t = typer.annotate(expr)
-    inferTyType(t, typeEnv)
-  }
-
-  private def inferTyType(tyExpr: TyExpr, typeEnv: Map[String, Ty]): Ty = tyExpr match {
-    case TyIdent(name, _) => typeEnv.getOrElse(name, UnknownTy)
-    case _ => tyExpr.ty
-  }
-
-  private def isScalarOrUnknown(ty: Ty): Boolean = 
-    ty == DistTy(ScalarTy) || ty == UnknownTy
+  private def isScalar(expr: TyExpr): Boolean = expr.ty == DistTy(ScalarTy)
 
   private def satisfies(actual: Ty, required: Ty): Boolean = {
     if (required == PoolTy) actual == PoolTy 
@@ -154,4 +149,7 @@ object typeChecker {
     else if (required == DistTy(ScalarTy)) isScalarOrUnknown(actual)
     else true
   }
+
+  private def isScalarOrUnknown(ty: Ty): Boolean = 
+    ty == DistTy(ScalarTy) || ty == UnknownTy
 }

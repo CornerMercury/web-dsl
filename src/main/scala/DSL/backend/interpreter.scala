@@ -5,28 +5,28 @@ import typedAST._
 import Builtins._
 
 object interpreter {
-
-  type Env = Map[String, Value]
-  type FuncEnv = Map[String, Func]
+  type Env = Map[String, (Ty, Value)]
+  type FuncEnv = Map[String, TyFunc]
 
   def interpretProgram(
-    program: Program,
+    typedProgram: List[Either[TyStmt, TyExpr]],
     sem: DistributionSemantics = DefaultDistributionSemantics
   ): List[Distribution] = {
 
-    val funcEnv =
-      program.topLevel.collect { case Left(f: Func) => f.name -> f }.toMap
+    val funcEnv: FuncEnv = typedProgram.collect {
+      case Left(tf: TyFunc) => tf.name -> tf
+    }.toMap
 
-    val (_, results) = program.topLevel.foldLeft((Map.empty[String, Value], List.empty[Distribution])) {
-      case ((env, acc), Left(Assign(name, expr))) =>
-        val value = eval(typer.annotate(expr), env, funcEnv, sem)
-        (env.updated(name, value), acc)
+    val (_, results) = typedProgram.foldLeft((Map.empty[String, (Ty, Value)], List.empty[Distribution])) {
+      case ((env, acc), Left(TyAssign(name, expr))) =>
+        val value = eval(expr, env, funcEnv, sem)
+        (env.updated(name, (expr.ty, value)), acc)
         
-      case ((env, acc), Left(Func(_, _, _))) =>
+      case ((env, acc), Left(_: TyFunc)) =>
         (env, acc) 
 
       case ((env, acc), Right(expr)) =>
-        val value = eval(typer.annotate(expr), env, funcEnv, sem)
+        val value = eval(expr, env, funcEnv, sem)
         val dist = forceDist(value, sem)
         (env, acc :+ dist)
     }
@@ -37,6 +37,25 @@ object interpreter {
   private def forceDist(v: Value, sem: DistributionSemantics): Distribution = v match {
     case DistValue(d) => d
     case PoolValue(items) => items.foldLeft(sem.scalar(0))((acc, d) => sem.add(acc, d))
+  }
+
+  private def resolveType(expr: TyExpr, env: Env): Ty = expr match {
+    case TyIdent(name, _) => 
+      env.get(name) match {
+        case Some((t, _)) => t
+        case None => expr.ty
+      }
+    case _ => expr.ty
+  }
+
+  private def expectDist(v: Value): Distribution = v match {
+    case DistValue(d) => d
+    case _ => throw new IllegalStateException(s"Type mismatch: Expected DistValue, got $v")
+  }
+
+  private def expectPool(v: Value): List[Distribution] = v match {
+    case PoolValue(items) => items
+    case _ => throw new IllegalStateException(s"Type mismatch: Expected PoolValue, got $v")
   }
 
   private def isBernoulli(d: Distribution): Boolean = {
@@ -63,7 +82,7 @@ object interpreter {
 
     case TyIdent(name, _) =>
       env.getOrElse(name,
-        throw new IllegalArgumentException(s"Unbound identifier: $name"))
+        throw new IllegalArgumentException(s"Unbound identifier: $name"))._2
 
     case TyCustomDist(d, _) => DistValue(sem.custom(d))
 
@@ -91,31 +110,31 @@ object interpreter {
       PoolValue(leftItems ++ rightItems)
 
     case TyBinary(BinaryOp.Dice, countExpr, sidesExpr, _) =>
-      val cVal = eval(countExpr, env, funcEnv, sem)
-      val sVal = eval(sidesExpr, env, funcEnv, sem)
-
-      (cVal, sVal) match {
-        case (DistValue(cDist), _) =>
-          if (cDist.size != 1) {
-             throw new IllegalStateException("Dice count must be a scalar distribution")
-          }
-          
-          val n = cDist.keys.head
-          
-          if (n <= 0) {
-            PoolValue(List())
-          } else if (n == 1) {
-            // 1dX is DistTy(UniformTy)
-            val sidesDist = forceDist(sVal, sem)
-            val countOne = sem.scalar(1)
-            DistValue(sem.dice(countOne, sidesDist))
-          } else {
-            // NdX is PoolTy
-            val sidesDist = forceDist(sVal, sem)
-            val countOne = sem.scalar(1)
-            val oneDieDist = sem.dice(countOne, sidesDist)
-            PoolValue(List.fill(n)(oneDieDist))
-          }
+      val countVal = eval(countExpr, env, funcEnv, sem)
+      val sidesVal = eval(sidesExpr, env, funcEnv, sem)
+      
+      val sidesDist = forceDist(sidesVal, sem)
+      
+      val n: Int = countVal match {
+        case DistValue(d) =>
+          if (d.size != 1)
+            throw new IllegalStateException(s"Dice count must be a single value, got ${d.size} outcomes")
+          d.keys.head.toInt
+        case PoolValue(items) =>
+          if (items.size != 1)
+            throw new IllegalStateException(s"Dice count must be a single value, got pool with ${items.size} items")
+          items.head.keys.head.toInt
+        case _ =>
+          throw new IllegalStateException(s"Expected DistValue or PoolValue for dice count, got $countVal")
+      }
+      
+      if (n < 0) throw new IllegalStateException(s"Dice count cannot be negative: $n")
+      
+      if (n == 0) {
+        PoolValue(Nil)   // empty pool
+      } else {
+        val oneDieDist = sem.dice(sem.scalar(1), sidesDist)
+        PoolValue(List.fill(n)(oneDieDist))
       }
 
     case TyCall(name, args, _) =>
@@ -133,9 +152,12 @@ object interpreter {
           }
 
           val evaluatedArgs = args.map(a => forceDist(eval(a, env, funcEnv, sem), sem))
-          val newEnv = env ++ func.params.zip(evaluatedArgs).map { case (param, v) => param.name -> DistValue(v) }
-          val res = eval(typer.annotate(func.body), newEnv, funcEnv, sem)
-          res
+          
+          val newEnv = env ++ func.params.zip(args).zip(evaluatedArgs).map { 
+            case ((param, argExpr), value) => param.name -> (argExpr.ty, DistValue(value))
+          }
+          
+          eval(func.body, newEnv, funcEnv, sem)
       }
 
     case TyMapExpr(funcName, inner, _) =>
@@ -151,8 +173,8 @@ object interpreter {
       
       var result: Distribution = Map.empty
       for ((v, p) <- dist) {
-        val newEnv = env + (func.params.head.name -> DistValue(Map(v -> 1.0)))
-        val resVal = eval(typer.annotate(func.body), newEnv, funcEnv, sem)
+        val newEnv = env + (func.params.head.name -> (DistTy(ScalarTy), DistValue(Map(v -> 1.0))))
+        val resVal = eval(func.body, newEnv, funcEnv, sem)
         val resDist = forceDist(resVal, sem)
         for ((rv, rp) <- resDist) {
           result = result.updated(rv, result.getOrElse(rv, 0.0) + p * rp)
@@ -163,10 +185,10 @@ object interpreter {
     case TyBlock(stmts, finalExpr, _) =>
       var currentEnv = env
       stmts.foreach {
-        case Assign(name, e) =>
-          val value = eval(typer.annotate(e), currentEnv, funcEnv, sem)
-          currentEnv = currentEnv.updated(name, value)
-        case Func(_, _, _) => () 
+        case TyAssign(name, e) =>
+          val value = eval(e, currentEnv, funcEnv, sem)
+          currentEnv = currentEnv.updated(name, (e.ty, value))
+        case TyFunc(_, _, _) => () 
       }
       eval(finalExpr, currentEnv, funcEnv, sem)
 
@@ -206,98 +228,122 @@ object interpreter {
       DistValue(result)
 
     case TyUnary(UnaryOp.Sum, inner, _) =>
-      val innerVal = eval(inner, env, funcEnv, sem)
-      innerVal match {
-        case PoolValue(items) if items.nonEmpty =>
-          val groups = items.groupBy(identity).view.mapValues(_.size).toMap
+      val actualTy = resolveType(inner, env)
+      actualTy match {
+        case PoolTy =>
+          val items = expectPool(eval(inner, env, funcEnv, sem))
+          if (items.nonEmpty) {
+            val groups = items.groupBy(identity).view.mapValues(_.size).toMap
 
-          val optimizedGroups = groups.map { case (dist, count) =>
-            if (count == 1) {
-              dist
-            } else if (isBernoulli(dist)) {
-              val p = dist(1)
-              MathOps.fastBinomial(count, p)
-            } else if (isUniformDie(dist)) {
-              val sides = dist.keys.max
-              sem.dice(sem.scalar(count), sem.scalar(sides))
-            } else {
-              (1 until count).foldLeft(dist)((acc, _) => sem.add(acc, dist))
-            }
-          }.toList
+            val optimizedGroups = groups.map { case (dist, count) =>
+              if (count == 1) {
+                dist
+              } else if (isBernoulli(dist)) {
+                val p = dist(1)
+                MathOps.fastBinomial(count, p)
+              } else if (isUniformDie(dist)) {
+                val sides = dist.keys.max
+                sem.dice(sem.scalar(count), sem.scalar(sides))
+              } else {
+                (1 until count).foldLeft(dist)((acc, _) => sem.add(acc, dist))
+              }
+            }.toList
 
-          DistValue(optimizedGroups.foldLeft(sem.scalar(0))((acc, d) => sem.add(acc, d)))
+            DistValue(optimizedGroups.foldLeft(sem.scalar(0))((acc, d) => sem.add(acc, d)))
+          } else {
+            DistValue(sem.scalar(0))
+          }
 
-        case _ => 
-          DistValue(forceDist(innerVal, sem))
+        case DistTy(_) =>
+          val v = eval(inner, env, funcEnv, sem)
+          DistValue(forceDist(v, sem))
+        
+        case UnknownTy =>
+          throw new IllegalStateException("Cannot Sum UnknownTy")
       }
 
     case TyUnary(UnaryOp.Prod, inner, _) =>
-      val innerVal = eval(inner, env, funcEnv, sem)
-      innerVal match {
-        case PoolValue(items) if items.nonEmpty =>
-          val groups = items.groupBy(identity).view.mapValues(_.size).toMap
+      val actualTy = resolveType(inner, env)
+      actualTy match {
+        case PoolTy =>
+          val items = expectPool(eval(inner, env, funcEnv, sem))
+          if (items.nonEmpty) {
+            val groups = items.groupBy(identity).view.mapValues(_.size).toMap
 
-          val optimizedGroups = groups.map { case (dist, count) =>
-            if (count == 1) {
-              dist
-            } else if (isBernoulli(dist)) {
-              val p = dist(1)
-              val pProd = math.pow(p, count)
-              Map(0 -> (1.0 - pProd), 1 -> pProd)
-            } else {
-              (1 until count).foldLeft(dist)((acc, _) => sem.mul(acc, dist))
-            }
-          }.toList
+            val optimizedGroups = groups.map { case (dist, count) =>
+              if (count == 1) {
+                dist
+              } else if (isBernoulli(dist)) {
+                val p = dist(1)
+                val pProd = math.pow(p, count)
+                Map(0 -> (1.0 - pProd), 1 -> pProd)
+              } else {
+                (1 until count).foldLeft(dist)((acc, _) => sem.mul(acc, dist))
+              }
+            }.toList
 
-          DistValue(optimizedGroups.foldLeft(sem.scalar(1))((acc, d) => sem.mul(acc, d)))
+            DistValue(optimizedGroups.foldLeft(sem.scalar(1))((acc, d) => sem.mul(acc, d)))
+          } else {
+             DistValue(sem.scalar(1))
+          }
 
-        case DistValue(d) => DistValue(d)
+        case DistTy(_) =>
+          val v = eval(inner, env, funcEnv, sem)
+          DistValue(forceDist(v, sem))
+
+        case UnknownTy =>
+           throw new IllegalStateException("Cannot Prod UnknownTy")
       }
 
     case TyUnary(UnaryOp.Max, i, _) =>
-      val d = forceDist(eval(i, env, funcEnv, sem), sem)
+      val v = eval(i, env, funcEnv, sem)
+      val d = forceDist(v, sem)
       DistValue(sem.max(d))
 
     case TyUnary(UnaryOp.Min, i, _) =>
-      val d = forceDist(eval(i, env, funcEnv, sem), sem)
+      val v = eval(i, env, funcEnv, sem)
+      val d = forceDist(v, sem)
       DistValue(sem.min(d))
 
     case TyBinary(op, l, r, _) =>
-      val dL = forceDist(eval(l, env, funcEnv, sem), sem)
-      val dR = forceDist(eval(r, env, funcEnv, sem), sem)
+      val lVal = eval(l, env, funcEnv, sem)
+      val rVal = eval(r, env, funcEnv, sem)
       
-      val tyL = l.ty
-      val tyR = r.ty
+      val actualTyL = resolveType(l, env)
+      val actualTyR = resolveType(r, env)
 
+      val dL = forceDist(lVal, sem)
+      val dR = forceDist(rVal, sem)
+      
       val res = op match {
         case BinaryOp.Add  => sem.add(dL, dR)
         case BinaryOp.Sub  => sem.sub(dL, dR)
         case BinaryOp.Mul  => sem.mul(dL, dR)
         case BinaryOp.Div  => sem.div(dL, dR)
-        case BinaryOp.Eq   => sem.eq(dL, tyL, dR, tyR)
-        case BinaryOp.Lt   => sem.lt(dL, tyL, dR, tyR)
-        case BinaryOp.Le   => sem.le(dL, tyL, dR, tyR)
-        case BinaryOp.Gt   => sem.gt(dL, tyL, dR, tyR)
-        case BinaryOp.Ge   => sem.ge(dL, tyL, dR, tyR)
+        case BinaryOp.Eq   => sem.eq(dL, actualTyL, dR, actualTyR)
+        case BinaryOp.Lt   => sem.lt(dL, actualTyL, dR, actualTyR)
+        case BinaryOp.Le   => sem.le(dL, actualTyL, dR, actualTyR)
+        case BinaryOp.Gt   => sem.gt(dL, actualTyL, dR, actualTyR)
+        case BinaryOp.Ge   => sem.ge(dL, actualTyL, dR, actualTyR)
         case BinaryOp.Dice => throw new IllegalStateException("Dice should have been handled earlier")
       }
       DistValue(res)
   }
 
   private def enumerateBindings(
-    bindings: List[RollBinding],
+    bindings: List[TyRollBinding],
     baseEnv: Env,
     funcEnv: FuncEnv,
     sem: DistributionSemantics
   ): List[(Env, Double)] = {
 
     bindings.foldLeft(List((baseEnv, 1.0))) {
-      case (acc, RollBinding(name, expr)) =>
+      case (acc, TyRollBinding(name, expr)) =>
         acc.flatMap { case (env, weight) =>
-          val valExpr = eval(typer.annotate(expr), env, funcEnv, sem)
+          val valExpr = eval(expr, env, funcEnv, sem)
           val dist = forceDist(valExpr, sem)
           dist.map { case (value, p) =>
-            (env.updated(name, DistValue(Map(value -> 1.0))), weight * p)
+            (env.updated(name, (DistTy(ScalarTy), DistValue(Map(value -> 1.0)))), weight * p)
           }
         }
     }

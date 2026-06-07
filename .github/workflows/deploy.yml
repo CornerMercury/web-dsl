@@ -35,7 +35,7 @@ jobs:
         uses: sbt/setup-sbt@v1
 
       - name: Build Scala.js
-        run: sbt fastOptJS
+        run: sbt fullOptJS
 
       - name: Prepare Deployment Folder
         run: |

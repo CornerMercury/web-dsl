@@ -2,7 +2,6 @@ package DSL.backend
 
 import DSL.backend.typedAST._
 import semanticTypes._
-// Import for DiceMode is no longer needed
 
 trait DistributionSemantics {
   def scalar(n: Int): Distribution

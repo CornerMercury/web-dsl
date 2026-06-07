@@ -10,6 +10,16 @@ object typedAST {
     def ty: Ty
   }
 
+  sealed trait TyStmt extends TyAstNode
+  case class TyAssign(name: String, expr: TyExpr) extends TyStmt
+  case class TyFunc(
+    name: String,
+    params: List[Param],
+    body: TyBlock
+  ) extends TyStmt
+
+  case class TyRollBinding(name: String, expr: TyExpr)
+
   enum UnaryOp { case Sum, Prod, Max, Min }
   enum BinaryOp { case Dice, Add, Sub, Mul, Div, Eq, Lt, Le, Gt, Ge }
 
@@ -21,13 +31,13 @@ object typedAST {
   case class TyBinary(op: BinaryOp, left: TyExpr, right: TyExpr, ty: Ty) extends TyExpr
 
   case class TyBlock(
-    statements: List[Stmt],
+    statements: List[TyStmt], // Changed from List[Stmt]
     finalExpr: TyExpr,
     ty: Ty
   ) extends TyExpr
 
   case class TyIfBranch(
-    bindings: List[RollBinding],
+    bindings: List[TyRollBinding],
     condition: TyExpr,
     body: TyBlock
   )
