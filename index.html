@@ -230,8 +230,8 @@
         <h2>DSL Runner</h2>
 
         <div class="editor-section">
-            <textarea id="code-input" placeholder="Type code here...">d6</textarea>
-
+            <textarea id="code-input" placeholder="Type code here..." spellcheck="false" autocorrect="off"
+                autocapitalize="none">d6</textarea>
             <div class="controls">
                 <button id="run-btn">Run Code</button>
                 <span id="timer">0.00s</span>
@@ -260,6 +260,21 @@
     </div>
 
     <script>
+        // Tab-to-spaces handler for textarea
+        const codeInput = document.getElementById('code-input');
+        codeInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const start = this.selectionStart;
+                const end = this.selectionEnd;
+                const value = this.value;
+                const tabSpaces = '    ';
+                this.value = value.substring(0, start) + tabSpaces + value.substring(end);
+                // Move cursor after inserted spaces
+                this.selectionStart = this.selectionEnd = start + tabSpaces.length;
+            }
+        });
+
         const runBtn = document.getElementById('run-btn');
         const timerSpan = document.getElementById('timer');
         const modeToggle = document.getElementById('mode-toggle');
