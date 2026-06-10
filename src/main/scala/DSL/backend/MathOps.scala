@@ -186,6 +186,36 @@ object MathOps {
     negatedRes.map { case (v, p) => -v -> p }
   }
 
+  // Time Complexity: O(iS)
+  def explodeN(die: Distribution, maxRolls: Int): Distribution = {
+    if (maxRolls <= 0) return Map(0 -> 1.0)
+    
+    if (maxRolls == 1) return die
+
+    val maxVal = die.keys.max
+    val pMax = die(maxVal)
+    
+    if (pMax == 1.0) return Map(maxVal * maxRolls -> 1.0)
+    
+    if (pMax == 0.0) return die
+
+    val nonMax = die.filterKeys(_ != maxVal).toMap
+    val result = mutable.Map[Int, Double]()
+
+    var probPow = 1.0   // pMax^k
+    for (k <- 0 to maxRolls - 1) {
+      val shiftAmount = k * maxVal
+      for ((v, p) <- nonMax) {
+        result(v + shiftAmount) =  p * probPow
+      }
+      probPow *= pMax
+    }
+    
+    result(maxVal * maxRolls) = result.getOrElse(maxVal * maxRolls, 0.0) + probPow
+
+    result.toMap
+  }
+
   private def computeBinomialPMF(n: Int, p: Double, limit: Int): Map[Int, Double] = {
     if (n == 0) return Map(0 -> 1.0)
     if (p == 0.0) return Map(0 -> 1.0)

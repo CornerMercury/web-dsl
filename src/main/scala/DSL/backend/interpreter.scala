@@ -133,7 +133,15 @@ object interpreter {
       if (n == 0) {
         PoolValue(Nil)   // empty pool
       } else {
-        val oneDieDist = sem.dice(sem.scalar(1), sidesDist)
+        val oneDieDist = sidesExpr match {
+          case TyIntLiteral(sides, _) =>
+            // generate a uniform distribution
+            sem.dice(sem.scalar(1), sem.scalar(sides))
+          case _ =>
+            // If it's a variable or custom distribution, use it directly
+            forceDist(eval(sidesExpr, env, funcEnv, sem), sem)
+        }
+        
         PoolValue(List.fill(n)(oneDieDist))
       }
 

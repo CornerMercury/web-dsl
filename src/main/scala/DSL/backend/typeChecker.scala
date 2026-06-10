@@ -145,7 +145,7 @@ object typeChecker {
 
   private def satisfies(actual: Ty, required: Ty): Boolean = {
     if (required == PoolTy) actual == PoolTy 
-    else if (required == DistTy(GenericTy)) actual.isInstanceOf[DistTy]
+    else if (required == DistTy(GenericTy)) actual.isInstanceOf[DistTy] || actual == PoolTy
     else if (required == DistTy(ScalarTy)) isScalarOrUnknown(actual)
     else true
   }

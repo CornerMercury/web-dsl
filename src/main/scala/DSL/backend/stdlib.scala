@@ -9,6 +9,12 @@ object Builtins {
       case DistValue(d) if d.size == 1 => d.keys.head
       case _ => throw new IllegalArgumentException(s"Expected scalar, got $v")
     }
+
+    private def asDist: Distribution = v match {
+      case DistValue(d) => d
+      case PoolValue(items) if items.size == 1 => items.head
+      case _ => throw new IllegalArgumentException("Expected distribution")
+    }
     
     private def asPool: List[Distribution] = v match {
       case PoolValue(items) => items
@@ -56,8 +62,22 @@ object Builtins {
         val n = pool.size
         DistValue(MathOps.keepLargest(math.max(0, n - k), pool))
       }
+    ),
+
+    BuiltinFunction("explodeN", List(DistTy(ScalarTy), DistTy(GenericTy)),
+      (args, sem) => {
+        val i = args(0).asScalar
+        val d = args(1).asDist
+        DistValue(MathOps.explodeN(d, i))
+      }
+    ),
+
+    BuiltinFunction("explode", List(DistTy(GenericTy)),
+      (args, sem) => {
+        val d = args(0).asDist
+        DistValue(MathOps.explodeN(d, 10))
+      }
     )
   )
-
   val all: Map[String, BuiltinFunction] = functions.map(f => f.name -> f).toMap
 }
