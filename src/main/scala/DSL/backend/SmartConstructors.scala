@@ -10,7 +10,9 @@ object SmartConstructors {
 
     (t1, t2) match {
       // Optimization: Summing two compatible Bernoulli trials
-      case (BernoulliTy(p1), BernoulliTy(p2)) if Math.abs(p1 - p2) < 1e-9 =>
+      case (BernoulliTy, BernoulliTy) =>
+        val p1 = d1.getOrElse(1, 0.0)
+        val p2 = d2.getOrElse(1, 0.0)
         MathOps.fastBinomial(2, p1)
       case _ =>
         MathOps.convolve(d1, d2, _ + _)
@@ -24,7 +26,8 @@ object SmartConstructors {
     val tSides = classify(sidesDist)
 
     (tCount, tSides) match {
-      case (ScalarTy, BernoulliTy(p)) =>
+      case (ScalarTy, BernoulliTy) =>
+        val p = sidesDist.getOrElse(1, 0.0)
         val n = countDist.keys.head
         return MathOps.fastBinomial(n, p)
       case _ =>

@@ -3,6 +3,7 @@ package DSL.backend
 import DSL.frontend.AST._
 import typedAST._
 import Builtins._
+import semanticTypes._
 
 object interpreter {
   type Env = Map[String, (Ty, Value)]
@@ -37,15 +38,6 @@ object interpreter {
   private def forceDist(v: Value, sem: DistributionSemantics): Distribution = v match {
     case DistValue(d) => d
     case PoolValue(items) => items.foldLeft(sem.scalar(0))((acc, d) => sem.add(acc, d))
-  }
-
-  private def resolveType(expr: TyExpr, env: Env): Ty = expr match {
-    case TyIdent(name, _) => 
-      env.get(name) match {
-        case Some((t, _)) => t
-        case None => expr.ty
-      }
-    case _ => expr.ty
   }
 
   private def expectDist(v: Value): Distribution = v match {
@@ -131,18 +123,20 @@ object interpreter {
       if (n < 0) throw new IllegalStateException(s"Dice count cannot be negative: $n")
       
       if (n == 0) {
-        PoolValue(Nil)   // empty pool
+        PoolValue(Nil)
       } else {
         val oneDieDist = sidesExpr match {
           case TyIntLiteral(sides, _) =>
-            // generate a uniform distribution
             sem.dice(sem.scalar(1), sem.scalar(sides))
           case _ =>
-            // If it's a variable or custom distribution, use it directly
             forceDist(eval(sidesExpr, env, funcEnv, sem), sem)
         }
         
-        PoolValue(List.fill(n)(oneDieDist))
+        if (n == 1) {
+          DistValue(oneDieDist)
+        } else {
+          PoolValue(List.fill(n)(oneDieDist))
+        }
       }
 
     case TyCall(name, args, _) =>
@@ -159,13 +153,19 @@ object interpreter {
             throw new IllegalArgumentException(s"Function ${func.name} expects ${func.params.size} arguments, got ${args.size}")
           }
 
-          val evaluatedArgs = args.map(a => forceDist(eval(a, env, funcEnv, sem), sem))
+          val argTypes = args.map(_.ty)
           
-          val newEnv = env ++ func.params.zip(args).zip(evaluatedArgs).map { 
-            case ((param, argExpr), value) => param.name -> (argExpr.ty, DistValue(value))
+          val evaluatedArgs = args.map(a => eval(a, env, funcEnv, sem))
+          
+          val specialisedBody = func.specialisations.getOrElse(argTypes,
+            throw new RuntimeException(s"No specialisation found for function ${name} with types $argTypes")
+          )
+          
+          val newEnv = env ++ func.params.zip(evaluatedArgs).zip(argTypes).map { 
+            case ((param, value), ty) => param.name -> (ty, value)
           }
           
-          eval(func.body, newEnv, funcEnv, sem)
+          eval(specialisedBody, newEnv, funcEnv, sem)
       }
 
     case TyMapExpr(funcName, inner, _) =>
@@ -181,8 +181,15 @@ object interpreter {
       
       var result: Distribution = Map.empty
       for ((v, p) <- dist) {
-        val newEnv = env + (func.params.head.name -> (DistTy(ScalarTy), DistValue(Map(v -> 1.0))))
-        val resVal = eval(func.body, newEnv, funcEnv, sem)
+        val scalarValue = DistValue(Map(v -> 1.0))
+        val key = DistTy(ScalarTy)
+        
+        val specialisedBody = func.specialisations.getOrElse(List(key), 
+           throw new RuntimeException(s"No specialisation for map function $funcName")
+        )
+
+        val newEnv = env + (func.params.head.name -> (key, scalarValue))
+        val resVal = eval(specialisedBody, newEnv, funcEnv, sem)
         val resDist = forceDist(resVal, sem)
         for ((rv, rp) <- resDist) {
           result = result.updated(rv, result.getOrElse(rv, 0.0) + p * rp)
@@ -236,7 +243,8 @@ object interpreter {
       DistValue(result)
 
     case TyUnary(UnaryOp.Sum, inner, _) =>
-      val actualTy = resolveType(inner, env)
+      val actualTy = inner.ty
+      
       actualTy match {
         case PoolTy =>
           val items = expectPool(eval(inner, env, funcEnv, sem))
@@ -271,7 +279,8 @@ object interpreter {
       }
 
     case TyUnary(UnaryOp.Prod, inner, _) =>
-      val actualTy = resolveType(inner, env)
+      val actualTy = inner.ty
+
       actualTy match {
         case PoolTy =>
           val items = expectPool(eval(inner, env, funcEnv, sem))
@@ -317,8 +326,8 @@ object interpreter {
       val lVal = eval(l, env, funcEnv, sem)
       val rVal = eval(r, env, funcEnv, sem)
       
-      val actualTyL = resolveType(l, env)
-      val actualTyR = resolveType(r, env)
+      val actualTyL = l.ty
+      val actualTyR = r.ty
 
       val dL = forceDist(lVal, sem)
       val dR = forceDist(rVal, sem)

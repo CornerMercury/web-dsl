@@ -11,18 +11,17 @@ import DSL.frontend.AST.{Type => FType, DistType => FDistType, PoolType => FPool
 
 sealed trait TypeError
 case class ArgTypeMismatch(funcName: String, paramName: String, expected: Ty, actual: Ty) extends TypeError
-case class DiceCountMustBeScalar(actualTy: Ty) extends TypeError
+case class InvalidFunctionSignature(name: String) extends TypeError
 
 object typeChecker {
 
   def check(program: Program): Either[List[TypeError], List[Either[TyStmt, TyExpr]]] = {
     val errors = mutable.ListBuffer.empty[TypeError]
     
-    // Build Global Signature Environment (Functions)
-    val funcEnv = program.topLevel.collect { case Left(f: Func) => f.name -> f }.toMap
+    val funcEnvRaw = program.topLevel.collect { case Left(f: Func) => f.name -> f }.toMap
     
     val funcSignatures: Map[String, Map[String, Ty]] = 
-      funcEnv.map { case (name, func) =>
+      funcEnvRaw.map { case (name, func) =>
         name -> func.params.map { p =>
           val ty = p.typ match {
             case Some(FPoolType) => PoolTy
@@ -33,13 +32,14 @@ object typeChecker {
         }.toMap
       }
 
-    // Pass 1: Collect Top-Level Assignments to resolve identifiers in order
+    var typedFuncEnv: typer.FuncEnv = Map.empty
+
     var typeEnv = Map.empty[String, Ty]
     var typedTopLevel = List.empty[Either[TyStmt, TyExpr]]
 
     program.topLevel.foreach {
       case Left(Assign(name, expr)) =>
-        val tExpr = typer.infer(expr, typeEnv)
+        val tExpr = typer.infer(expr, typeEnv, typedFuncEnv)
       
         validateExpr(tExpr, typeEnv, errors, funcSignatures)
         
@@ -49,19 +49,40 @@ object typeChecker {
       case Left(f @ Func(name, params, body)) =>
         val sig = funcSignatures.getOrElse(name, Map.empty)
         val funcEnvLocal = typeEnv ++ sig
-        val tFunc = typer.typeStmt(f, funcEnvLocal)
         
-        // Recursively check inside function
-        tFunc match {
-          case tf: typedAST.TyFunc =>
-            validateExpr(tf.body, sig, errors, funcSignatures)
-          case _ =>
+        val tStmt = typer.typeStmt(f, funcEnvLocal, Map.empty)
+
+        tStmt match {
+          case tFunc: typedAST.TyFunc =>
+            // Add to typedFuncEnv so subsequent calls can resolve it
+            typedFuncEnv = typedFuncEnv.updated(tFunc.name, tFunc)
+            
+            var hasValidSpecialisation = false
+            
+            // Validate each specialisation individually
+            tFunc.specialisations.foreach { case (_, specialisedBody) =>
+              val specErrors = mutable.ListBuffer.empty[TypeError]
+              validateExpr(specialisedBody, Map.empty, specErrors, Map.empty)
+              if (specErrors.isEmpty) {
+                hasValidSpecialisation = true
+              }
+            }
+            
+            // Only report an error if NO specialisations were valid
+            // Temporary until scalar becomes normal type in the future
+            if (!hasValidSpecialisation) {
+              errors += InvalidFunctionSignature(name)
+            }
+            
+            typedTopLevel = typedTopLevel :+ Left(tFunc)
+            
+          case _ => 
+            // Should not happen for Func inputs
+            typedTopLevel = typedTopLevel :+ Left(tStmt)
         }
-        
-        typedTopLevel = typedTopLevel :+ Left(tFunc)
 
       case Right(expr) =>
-        val tExpr = typer.infer(expr, typeEnv)
+        val tExpr = typer.infer(expr, typeEnv, typedFuncEnv)
         validateExpr(tExpr, typeEnv, errors, funcSignatures)
         typedTopLevel = typedTopLevel :+ Right(tExpr)
     }
@@ -84,7 +105,7 @@ object typeChecker {
     case TyPoolConcat(l, r, _) => validateExpr(l, env, errors, funcSignatures); validateExpr(r, env, errors, funcSignatures)
     
     case TyBinary(BinaryOp.Dice, countExpr, _, _) =>
-      if (!isScalar(countExpr)) errors += DiceCountMustBeScalar(countExpr.ty)
+      // We allow any type here. If it's not a scalar, it will fail at runtime.
       validateExpr(countExpr, env, errors, funcSignatures)
 
     case TyUnary(_, inner, _) => validateExpr(inner, env, errors, funcSignatures)
@@ -124,7 +145,10 @@ object typeChecker {
     case TyBlock(stmts, finalExpr, _) =>
       stmts.foreach {
         case TyAssign(_, e) => validateExpr(e, env, errors, funcSignatures)
-        case TyFunc(_, _, b) => validateExpr(b, env, errors, funcSignatures)
+        case tf: typedAST.TyFunc =>
+           tf.specialisations.values.foreach { specialisedBody =>
+             validateExpr(specialisedBody, env, errors, funcSignatures)
+           }
       }
       validateExpr(finalExpr, env, errors, funcSignatures)
         
@@ -146,7 +170,8 @@ object typeChecker {
   private def satisfies(actual: Ty, required: Ty): Boolean = {
     if (required == PoolTy) actual == PoolTy 
     else if (required == DistTy(GenericTy)) actual.isInstanceOf[DistTy] || actual == PoolTy
-    else if (required == DistTy(ScalarTy)) isScalarOrUnknown(actual)
+    else if (required == DistTy(ScalarTy)) 
+      actual.isInstanceOf[DistTy]
     else true
   }
 

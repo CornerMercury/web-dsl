@@ -19,9 +19,8 @@ case object ScalarTy extends DistSubTy
 
 /** 
  * A specific "Two Outcome" distribution where the outcomes are EXACTLY {0, 1}.
- * This represents a Bernoulli Trial with probability of success 'p'.
  */
-case class BernoulliTy(p: Double) extends DistSubTy
+case object BernoulliTy extends DistSubTy
 
 /** Any other distribution with exactly two outcomes (e.g. {1, 5}). */
 case object BinomialTy extends DistSubTy
@@ -41,9 +40,9 @@ object semanticTypes {
     else if (dist.size == 2) {
       // Check for Bernoulli: Keys must be exactly 0 and 1
       if (dist.contains(0) && dist.contains(1)) {
-        BernoulliTy(dist(1)) // Store 'p' (probability of 1)
+        BernoulliTy 
       } else {
-        BinomialTy // Generic 2-outcome distribution (e.g. Coin flip 1 or 2)
+        BinomialTy 
       }
     } 
     else if (dist.isEmpty) {

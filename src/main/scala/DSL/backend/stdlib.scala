@@ -30,7 +30,7 @@ object Builtins {
   )
 
   private val functions: List[BuiltinFunction] = List(
-    BuiltinFunction("keepLargest", List(DistTy(ScalarTy), PoolTy),
+    BuiltinFunction("keepHighest", List(DistTy(ScalarTy), PoolTy),
       (args, sem) => {
         val k = args(0).asScalar
         val pool = args(1).asPool
@@ -38,7 +38,7 @@ object Builtins {
       }
     ),
     
-    BuiltinFunction("keepSmallest", List(DistTy(ScalarTy), PoolTy),
+    BuiltinFunction("keepLowest", List(DistTy(ScalarTy), PoolTy),
       (args, sem) => {
         val k = args(0).asScalar
         val pool = args(1).asPool
@@ -46,7 +46,7 @@ object Builtins {
       }
     ),
 
-    BuiltinFunction("dropLargest", List(DistTy(ScalarTy), PoolTy),
+    BuiltinFunction("dropHighest", List(DistTy(ScalarTy), PoolTy),
       (args, sem) => {
         val k = args(0).asScalar
         val pool = args(1).asPool
@@ -55,7 +55,7 @@ object Builtins {
       }
     ),
 
-    BuiltinFunction("dropSmallest", List(DistTy(ScalarTy), PoolTy),
+    BuiltinFunction("dropLowest", List(DistTy(ScalarTy), PoolTy),
       (args, sem) => {
         val k = args(0).asScalar
         val pool = args(1).asPool
@@ -72,12 +72,29 @@ object Builtins {
       }
     ),
 
-    BuiltinFunction("explode", List(DistTy(GenericTy)),
+BuiltinFunction("explode", List(DistTy(GenericTy)),
       (args, sem) => {
         val d = args(0).asDist
         DistValue(MathOps.explodeN(d, 10))
       }
+    ),
+
+    BuiltinFunction("nthHighest", List(DistTy(ScalarTy), PoolTy),
+      (args, sem) => {
+        val k = args(0).asScalar
+        val pool = args(1).asPool
+        DistValue(MathOps.getNthHighest(k, pool))
+      }
+    ),
+
+    BuiltinFunction("nthLowest", List(DistTy(ScalarTy), PoolTy),
+      (args, sem) => {
+        val k = args(0).asScalar
+        val pool = args(1).asPool
+        DistValue(MathOps.getNthLowest(k, pool))
+      }
     )
   )
+  
   val all: Map[String, BuiltinFunction] = functions.map(f => f.name -> f).toMap
 }

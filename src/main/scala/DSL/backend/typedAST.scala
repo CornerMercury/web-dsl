@@ -1,6 +1,7 @@
 package DSL.backend
 
 import DSL.frontend.AST._
+import DSL.backend.semanticTypes._
 
 object typedAST {
 
@@ -12,10 +13,11 @@ object typedAST {
 
   sealed trait TyStmt extends TyAstNode
   case class TyAssign(name: String, expr: TyExpr) extends TyStmt
+  
   case class TyFunc(
     name: String,
     params: List[Param],
-    body: TyBlock
+    specialisations: Map[List[Ty], TyBlock]
   ) extends TyStmt
 
   case class TyRollBinding(name: String, expr: TyExpr)
@@ -31,7 +33,7 @@ object typedAST {
   case class TyBinary(op: BinaryOp, left: TyExpr, right: TyExpr, ty: Ty) extends TyExpr
 
   case class TyBlock(
-    statements: List[TyStmt], // Changed from List[Stmt]
+    statements: List[TyStmt], 
     finalExpr: TyExpr,
     ty: Ty
   ) extends TyExpr

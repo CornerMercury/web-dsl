@@ -8,6 +8,10 @@ object MathOps {
 
   def scalar(n: Int): Distribution = Map(n -> 1.0)
 
+  private def isBernoulli(d: Distribution): Boolean = {
+    d.keys == Set(0, 1)
+  }
+
   def keepSmallest(k: Int, pool: List[Distribution]): Distribution = {
     if (pool.isEmpty) return Map(0 -> 1.0)
     
@@ -214,6 +218,137 @@ object MathOps {
     result(maxVal * maxRolls) = result.getOrElse(maxVal * maxRolls, 0.0) + probPow
 
     result.toMap
+  }
+
+
+  def getNthLowest(k: Int, pool: List[Distribution]): Distribution = {
+    val n = pool.size
+    if (n == 0 || k <= 0 || k > n) return Map.empty[Int, Double]
+
+    val firstDie = pool.head
+    if (pool.forall(_ == firstDie)) {
+      nthLowestHomogeneous(k, n, firstDie)
+    } else {
+      if (pool.forall(isBernoulli)) {
+        nthLowestBernoulli(k, n, pool)
+      } else {
+        nthLowestHeterogeneous(k, pool)
+      }
+    }
+  }
+
+  def getNthHighest(k: Int, pool: List[Distribution]): Distribution = {
+    val n = pool.size
+    if (n == 0 || k <= 0 || k > n) return Map.empty[Int, Double]
+    getNthLowest(n - k + 1, pool)
+  }
+
+  // --- Homogeneous Case (UniformTy / GenericTy but identical) ---
+  // Time Complexity: O(F * N) where F is number of unique faces
+  private def nthLowestHomogeneous(k: Int, n: Int, die: Distribution): Distribution = {
+    val faces = die.keys.toSeq.sorted
+    val result = mutable.Map[Int, Double]()
+    var prevCDF = 0.0
+
+    for (face <- faces) {
+      val pLeq = die.filterKeys(_ <= face).values.sum
+      val currCDF = binomialCDF(n, pLeq, k)
+      val pVal = math.max(0.0, currCDF - prevCDF)
+      result(face) = pVal
+      prevCDF = currCDF
+    }
+    result.toMap
+  }
+
+  // --- Heterogeneous Bernoulli Case (BernoulliTy) ---
+  // Time Complexity: O(N^2) - Compute Poisson Binomial once
+  private def nthLowestBernoulli(k: Int, n: Int, pool: List[Distribution]): Distribution = {
+    
+    val distSum = poissonBinomial(pool.map(d => d.getOrElse(1, 0.0))) // Prob of success (rolling 1)
+    
+    val pZero = distSum.filterKeys(_ <= n - k).values.sum
+    val pOne = 1.0 - pZero
+    
+    Map(0 -> pZero, 1 -> pOne).filter(_._2 > 0.0)
+  }
+
+  // --- Generic Heterogeneous Case (GenericTy) ---
+  // Time Complexity: O(F * N^2) where F is number of unique faces in the pool
+  private def nthLowestHeterogeneous(k: Int, pool: List[Distribution]): Distribution = {
+    val allFaces = pool.flatMap(_.keys).toSeq.sorted.distinct
+    val result = mutable.Map[Int, Double]()
+    
+    var prevCDF = 0.0
+
+    for (face <- allFaces) {
+      val cdf = poissonBinomialCDF(k, pool, face)
+      val pVal = math.max(0.0, cdf - prevCDF)
+      result(face) = pVal  
+      prevCDF = cdf
+    }
+    result.toMap
+  }
+
+
+  /**
+   * Computes sum_{j=k}^{n} BinomialPMF(n, p, j)
+   */
+  private def binomialCDF(n: Int, p: Double, k: Int): Double = {
+    if (p >= 1.0) return 1.0
+    if (p <= 0.0) return 0.0
+    if (k <= 0) return 1.0
+    if (k > n) return 0.0
+
+    val pmf = computeBinomialPMF(n, p, n) 
+    (k to n).map(pmf.getOrElse(_, 0.0)).sum
+  }
+
+  /**
+   * Computes the probability that the sum of independent Bernoulli variables
+   * with probabilities 'probs' is >= k.
+   * (Poisson Binomial CDF).
+   * Time Complexity: O(N^2)
+   */
+  private def poissonBinomialCDF(k: Int, pool: List[Distribution], threshold: Int): Double = {
+    val n = pool.size
+    val probs = pool.map(d => d.filterKeys(_ <= threshold).values.sum)
+
+    var dp = Array.fill(n + 1)(0.0)
+    dp(0) = 1.0
+
+    for (p <- probs) {
+      val nextDp = Array.fill(n + 1)(0.0)
+      for (j <- 0 to n) {
+        if (dp(j) > 0) {
+          nextDp(j) += dp(j) * (1.0 - p)
+          if (j + 1 <= n) nextDp(j + 1) += dp(j) * p
+        }
+      }
+      dp = nextDp
+    }
+
+    (k to n).map(dp).sum
+  }
+
+  /**
+   * Returns the full PMF of the Poisson Binomial distribution (sum of heterogeneous Bernoullis).
+   */
+  private def poissonBinomial(probs: List[Double]): Map[Int, Double] = {
+    val n = probs.size
+    var dp = Array.fill(n + 1)(0.0)
+    dp(0) = 1.0
+
+    for (p <- probs) {
+      val nextDp = Array.fill(n + 1)(0.0)
+      for (j <- 0 to n) {
+        if (dp(j) > 0) {
+          nextDp(j) += dp(j) * (1.0 - p)
+          if (j + 1 <= n) nextDp(j + 1) += dp(j) * p
+        }
+      }
+      dp = nextDp
+    }
+    dp.zipWithIndex.filter(_._1 > 0).map(_.swap).toMap
   }
 
   private def computeBinomialPMF(n: Int, p: Double, limit: Int): Map[Int, Double] = {

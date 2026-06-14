@@ -56,7 +56,10 @@ object DefaultDistributionSemantics extends DistributionSemantics {
         val res = if (d1.keys.head == d2.keys.head) 1 else 0
         MathOps.scalar(res)
 
-      case (DistTy(BernoulliTy(p1)), DistTy(BernoulliTy(p2))) =>
+      case (DistTy(BernoulliTy), DistTy(BernoulliTy)) =>
+        val p1 = d1.getOrElse(1, 0.0)
+        val p2 = d2.getOrElse(1, 0.0)
+        // P(X=Y) = P(0,0) + P(1,1) = (1-p1)(1-p2) + p1*p2
         val pTrue = (1.0 - p1) * (1.0 - p2) + (p1 * p2)
         booleanDist(pTrue)
 
@@ -74,7 +77,10 @@ object DefaultDistributionSemantics extends DistributionSemantics {
         val res = if (d1.keys.head < d2.keys.head) 1 else 0
         MathOps.scalar(res)
 
-      case (DistTy(BernoulliTy(p1)), DistTy(BernoulliTy(p2))) =>
+      case (DistTy(BernoulliTy), DistTy(BernoulliTy)) =>
+        val p1 = d1.getOrElse(1, 0.0)
+        val p2 = d2.getOrElse(1, 0.0)
+        // P(X < Y) = P(0, 1) = (1-p1)*p2
         booleanDist((1.0 - p1) * p2)
 
       case (DistTy(UniformTy), DistTy(UniformTy)) if d1.size == d2.size =>
@@ -91,7 +97,11 @@ object DefaultDistributionSemantics extends DistributionSemantics {
         val res = if (d1.keys.head <= d2.keys.head) 1 else 0
         MathOps.scalar(res)
 
-      case (DistTy(BernoulliTy(p1)), DistTy(BernoulliTy(p2))) =>
+      case (DistTy(BernoulliTy), DistTy(BernoulliTy)) =>
+        val p1 = d1.getOrElse(1, 0.0)
+        val p2 = d2.getOrElse(1, 0.0)
+        // P(X <= Y) = 1 - P(X > Y)
+        // P(X > Y) = P(1, 0) = p1 * (1-p2)
         booleanDist(1.0 - (p1 * (1.0 - p2)))
 
       case (DistTy(UniformTy), DistTy(UniformTy)) if d1.size == d2.size =>
@@ -109,7 +119,10 @@ object DefaultDistributionSemantics extends DistributionSemantics {
         val res = if (d1.keys.head > d2.keys.head) 1 else 0
         MathOps.scalar(res)
 
-      case (DistTy(BernoulliTy(p1)), DistTy(BernoulliTy(p2))) =>
+      case (DistTy(BernoulliTy), DistTy(BernoulliTy)) =>
+        val p1 = d1.getOrElse(1, 0.0)
+        val p2 = d2.getOrElse(1, 0.0)
+        // P(X > Y) = P(1, 0) = p1 * (1-p2)
         booleanDist(p1 * (1.0 - p2))
 
       case (DistTy(UniformTy), DistTy(UniformTy)) if d1.size == d2.size =>
@@ -126,7 +139,11 @@ object DefaultDistributionSemantics extends DistributionSemantics {
         val res = if (d1.keys.head >= d2.keys.head) 1 else 0
         MathOps.scalar(res)
 
-      case (DistTy(BernoulliTy(p1)), DistTy(BernoulliTy(p2))) =>
+      case (DistTy(BernoulliTy), DistTy(BernoulliTy)) =>
+        val p1 = d1.getOrElse(1, 0.0)
+        val p2 = d2.getOrElse(1, 0.0)
+        // P(X >= Y) = 1 - P(X < Y)
+        // P(X < Y) = (1-p1)*p2
         booleanDist(1.0 - ((1.0 - p1) * p2))
 
       case (DistTy(UniformTy), DistTy(UniformTy)) if d1.size == d2.size =>
